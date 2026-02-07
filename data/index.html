@@ -11,7 +11,6 @@
         --card: rgba(255, 255, 255, 0.06);
         --text: rgba(255, 255, 255, 0.92);
         --muted: rgba(255, 255, 255, 0.66);
-        --accent: #3b82f6;
         --ok: #22c55e;
         --off: #94a3b8;
         --danger: #ef4444;
@@ -179,8 +178,8 @@
         </div>
 
         <div class="hint">
-          Jos nakyma ei loydy, varmista etta olet ajanut
-          <code>pio run -t uploadfs</code> (LittleFS) ennen ohjelman uploadia.
+          Paivitys tulee SSE:lla ilman pollausta. Jos nakyma ei loydy, aja
+          <code>pio run -t uploadfs</code> ennen ohjelman uploadia.
         </div>
       </div>
     </div>
@@ -200,32 +199,55 @@
       let currentLed = null;
       let currentWaterLeak = null;
       let currentWaterValue = null;
+      let currentThreshold = null;
+      let connected = false;
 
-      function setUi(connected, led, leak, rawValue, threshold) {
-        currentLed = led;
-        currentWaterLeak = leak;
-        currentWaterValue = rawValue;
+      function stamp(msg) {
+        lastMsg.textContent = `${new Date().toLocaleTimeString()} ${msg}`;
+      }
 
+      function render() {
         ledState.textContent =
-          led === true ? "ON" : led === false ? "OFF" : "?";
+          currentLed === true ? "ON" : currentLed === false ? "OFF" : "?";
         waterState.textContent =
-          leak === true ? "HAVAITTU" : leak === false ? "EI" : "?";
+          currentWaterLeak === true
+            ? "HAVAITTU"
+            : currentWaterLeak === false
+              ? "EI"
+              : "?";
+
         waterValue.textContent =
-          typeof rawValue === "number"
-            ? `${rawValue}${typeof threshold === "number" ? ` (kynnys ${threshold})` : ""}`
+          typeof currentWaterValue === "number"
+            ? `${currentWaterValue}${typeof currentThreshold === "number" ? ` (kynnys ${currentThreshold})` : ""}`
             : "?";
 
         toggleBtn.textContent =
-          led === true ? "Sammuta LED" : led === false ? "Sytyta LED" : "...";
-        toggleBtn.classList.toggle("off", led === true);
+          currentLed === true
+            ? "Sammuta LED"
+            : currentLed === false
+              ? "Sytyta LED"
+              : "...";
+        toggleBtn.classList.toggle("off", currentLed === true);
 
-        dot.classList.toggle("on", connected && led === true);
+        dot.classList.toggle("on", connected && currentLed === true);
         dot.classList.toggle("err", !connected);
         pillText.textContent = !connected
           ? "Ei yhteytta"
-          : led === true
+          : currentLed === true
             ? "Paalla"
             : "Pois";
+      }
+
+      function applyStatus(status) {
+        currentLed = !!status?.led;
+        currentWaterLeak = !!status?.water?.detected;
+        currentWaterValue =
+          typeof status?.water?.value === "number" ? status.water.value : null;
+        currentThreshold =
+          typeof status?.water?.threshold === "number"
+            ? status.water.threshold
+            : null;
+        render();
       }
 
       async function apiStatus() {
@@ -244,24 +266,30 @@
         return body;
       }
 
-      function stamp(msg) {
-        lastMsg.textContent = `${new Date().toLocaleTimeString()} ${msg}`;
-      }
+      function connectSse() {
+        const es = new EventSource("/api/events");
 
-      async function refresh() {
-        try {
-          const s = await apiStatus();
-          const leak = !!s?.water?.detected;
-          const rawValue =
-            typeof s?.water?.value === "number" ? s.water.value : null;
-          const threshold =
-            typeof s?.water?.threshold === "number" ? s.water.threshold : null;
-          setUi(true, !!s.led, leak, rawValue, threshold);
-          stamp("OK");
-        } catch (e) {
-          setUi(false, currentLed, currentWaterLeak, currentWaterValue, null);
-          stamp(String(e?.message || e));
-        }
+        es.addEventListener("status", (event) => {
+          try {
+            const status = JSON.parse(event.data);
+            connected = true;
+            applyStatus(status);
+          } catch (e) {
+            stamp(`Virheellinen SSE-data: ${e?.message || e}`);
+          }
+        });
+
+        es.onopen = () => {
+          connected = true;
+          render();
+          stamp("SSE yhdistetty");
+        };
+
+        es.onerror = () => {
+          connected = false;
+          render();
+          stamp("SSE yhteys poikki, yritetaan uudelleen");
+        };
       }
 
       async function setLed(next) {
@@ -270,15 +298,9 @@
         offBtn.disabled = true;
         try {
           const s = await apiSet(next ? "on" : "off");
-          const leak = !!s?.water?.detected;
-          const rawValue =
-            typeof s?.water?.value === "number" ? s.water.value : null;
-          const threshold =
-            typeof s?.water?.threshold === "number" ? s.water.threshold : null;
-          setUi(true, !!s.led, leak, rawValue, threshold);
+          applyStatus(s);
           stamp(next ? "Paalle" : "Pois");
         } catch (e) {
-          setUi(false, currentLed, currentWaterLeak, currentWaterValue, null);
           stamp(String(e?.message || e));
         } finally {
           toggleBtn.disabled = false;
@@ -288,14 +310,26 @@
       }
 
       toggleBtn.addEventListener("click", () => {
-        if (currentLed === null) return refresh();
+        if (currentLed === null) return;
         return setLed(!currentLed);
       });
       onBtn.addEventListener("click", () => setLed(true));
       offBtn.addEventListener("click", () => setLed(false));
 
-      refresh();
-      setInterval(refresh, 2500);
+      (async () => {
+        try {
+          const initial = await apiStatus();
+          applyStatus(initial);
+          connected = true;
+          render();
+          stamp("Alkutila haettu");
+        } catch (e) {
+          connected = false;
+          render();
+          stamp(String(e?.message || e));
+        }
+        connectSse();
+      })();
     </script>
   </body>
 </html>

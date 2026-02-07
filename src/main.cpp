@@ -1,8 +1,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebServer.h>
 #include <LittleFS.h>
 #include <ESPmDNS.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 
 #ifndef WIFI_SSID
 #define WIFI_SSID "GamersNetwork-2.4"
@@ -33,7 +34,8 @@
 #endif
 
 namespace {
-WebServer server(80);
+AsyncWebServer server(80);
+AsyncEventSource events("/api/events");
 bool ledOn = false;
 bool filesystemReady = false;
 
@@ -42,14 +44,41 @@ bool waterLeakDetected = false;
 bool waterLeakLedOn = false;
 unsigned long lastWaterReadMs = 0;
 unsigned long lastWaterBlinkMs = 0;
+unsigned long lastStatusPushMs = 0;
+bool statusDirty = true;
 
 constexpr unsigned long WATER_READ_INTERVAL_MS = 250;
 constexpr unsigned long WATER_BLINK_INTERVAL_MS = 200;
+constexpr unsigned long STATUS_PUSH_INTERVAL_MS = 1000;
+
+String makeStatusJson() {
+  return String("{\"led\":") + (ledOn ? "true" : "false") +
+         ",\"water\":{\"detected\":" +
+         (waterLeakDetected ? "true" : "false") +
+         ",\"value\":" + String(waterSensorValue) +
+         ",\"threshold\":" + String(WATER_THRESHOLD) + "}}";
+}
+
+void pushStatus(bool force = false) {
+  const unsigned long now = millis();
+  if (!force && !statusDirty && (now - lastStatusPushMs < STATUS_PUSH_INTERVAL_MS)) {
+    return;
+  }
+
+  String json = makeStatusJson();
+  events.send(json.c_str(), "status", now);
+  statusDirty = false;
+  lastStatusPushMs = now;
+}
 
 void writeLed(bool on) {
+  if (ledOn == on) {
+    return;
+  }
   ledOn = on;
   const uint8_t level = (LED_ACTIVE_LOW ? (on ? LOW : HIGH) : (on ? HIGH : LOW));
   digitalWrite(LED_PIN, level);
+  statusDirty = true;
 }
 
 void writeWaterLeakLed(bool on) {
@@ -62,17 +91,23 @@ void updateWaterLeakState() {
 
   if (now - lastWaterReadMs >= WATER_READ_INTERVAL_MS) {
     lastWaterReadMs = now;
+    const int previousValue = waterSensorValue;
     waterSensorValue = analogRead(WATER_SENSOR_PIN);
     const bool nextLeakDetected = (waterSensorValue < WATER_THRESHOLD);
 
     if (nextLeakDetected != waterLeakDetected) {
       waterLeakDetected = nextLeakDetected;
+      statusDirty = true;
       Serial.printf("Vesivuoto: %s (arvo=%d, kynnys=%d)\n",
                     waterLeakDetected ? "havaittu" : "ei", waterSensorValue,
                     WATER_THRESHOLD);
       if (!waterLeakDetected) {
         writeWaterLeakLed(false);
       }
+    }
+
+    if (abs(previousValue - waterSensorValue) >= 10) {
+      statusDirty = true;
     }
   }
 
@@ -82,31 +117,20 @@ void updateWaterLeakState() {
   }
 }
 
-void sendJsonStatus() {
-  String json = String("{\"led\":") + (ledOn ? "true" : "false") +
-                ",\"water\":{\"detected\":" +
-                (waterLeakDetected ? "true" : "false") +
-                ",\"value\":" + String(waterSensorValue) +
-                ",\"threshold\":" + String(WATER_THRESHOLD) + "}}";
-  server.sendHeader("Cache-Control", "no-store");
-  server.send(200, "application/json", json);
+void sendJsonStatus(AsyncWebServerRequest *request) {
+  String json = makeStatusJson();
+  AsyncWebServerResponse *response =
+      request->beginResponse(200, "application/json", json);
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
 }
 
-bool serveFromFs(const char *path, const char *contentType) {
-  if (!filesystemReady) return false;
-  if (!LittleFS.exists(path)) {
-    return false;
-  }
-
-  File file = LittleFS.open(path, "r");
-  if (!file) {
-    return false;
-  }
-
-  server.sendHeader("Cache-Control", "no-store");
-  server.streamFile(file, contentType);
-  file.close();
-  return true;
+void sendJsonError(AsyncWebServerRequest *request, int statusCode,
+                   const char *message) {
+  AsyncWebServerResponse *response = request->beginResponse(
+      statusCode, "application/json", String("{\"error\":\"") + message + "\"}");
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
 }
 } // namespace
 
@@ -152,12 +176,16 @@ void setup() {
     Serial.println("WiFi ei yhdistynyt (20s). Tarkista WIFI_SSID/WIFI_PASSWORD.");
   }
 
-  // UI
-  server.on("/", HTTP_GET, []() {
-    if (serveFromFs("/index.html", "text/html; charset=utf-8")) {
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (filesystemReady && LittleFS.exists("/index.html")) {
+      AsyncWebServerResponse *response =
+          request->beginResponse(LittleFS, "/index.html", "text/html; charset=utf-8");
+      response->addHeader("Cache-Control", "no-store");
+      request->send(response);
       return;
     }
-    server.send(
+
+    request->send(
         200, "text/html; charset=utf-8",
         "<!doctype html><meta charset=utf-8><meta name=viewport "
         "content='width=device-width,initial-scale=1'>"
@@ -165,28 +193,43 @@ void setup() {
         "<p>Luo tiedosto <code>data/index.html</code> ja aja <code>pio run -t uploadfs</code>.</p>");
   });
 
-  // API
-  server.on("/api/status", HTTP_GET, []() { sendJsonStatus(); });
+  server.on("/api/status", HTTP_GET,
+            [](AsyncWebServerRequest *request) { sendJsonStatus(request); });
 
-  auto handleLed = []() {
-    String state = server.arg("state");
+  auto handleLed = [](AsyncWebServerRequest *request) {
+    String state;
+    if (request->hasParam("state")) {
+      state = request->getParam("state")->value();
+    } else if (request->hasParam("state", true)) {
+      state = request->getParam("state", true)->value();
+    }
+
     state.toLowerCase();
     if (state == "on" || state == "1" || state == "true") {
       writeLed(true);
     } else if (state == "off" || state == "0" || state == "false") {
       writeLed(false);
     } else {
-      server.send(400, "application/json",
-                  "{\"error\":\"Use ?state=on|off\"}");
+      sendJsonError(request, 400, "Use ?state=on|off");
       return;
     }
-    sendJsonStatus();
+
+    sendJsonStatus(request);
+    pushStatus(true);
   };
 
   server.on("/api/led", HTTP_GET, handleLed);
   server.on("/api/led", HTTP_POST, handleLed);
 
-  server.onNotFound([]() { server.send(404, "text/plain", "Not found"); });
+  events.onConnect([](AsyncEventSourceClient *client) {
+    Serial.printf("SSE client connected: %u\n", client->lastId());
+    String json = makeStatusJson();
+    client->send(json.c_str(), "status", millis());
+  });
+  server.addHandler(&events);
+
+  server.onNotFound(
+      [](AsyncWebServerRequest *request) { request->send(404, "text/plain", "Not found"); });
 
   server.begin();
   Serial.println("HTTP serveri kaynnissa portissa 80");
@@ -194,5 +237,5 @@ void setup() {
 
 void loop() {
   updateWaterLeakState();
-  server.handleClient();
+  pushStatus();
 }
