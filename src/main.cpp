@@ -6,11 +6,11 @@
 #include <ESPAsyncWebServer.h>
 
 #ifndef WIFI_SSID
-#define WIFI_SSID "GamersNetwork-2.4"
+#define WIFI_SSID "Joku"
 #endif
 
 #ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD "TUF7777777"
+#define WIFI_PASSWORD "Jossain"
 #endif
 
 #ifndef LED_PIN
