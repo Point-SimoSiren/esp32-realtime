@@ -5,6 +5,10 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 
+// TÄMÄ SERVERI EI PERUSTU POLLAUKSEEN
+// VAAN WEBSOCKETIIN
+// HTML LÖYTYY DATA KANSIOSTA
+
 #ifndef WIFI_SSID
 #define WIFI_SSID "Joku"
 #endif
