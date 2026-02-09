@@ -27,8 +27,6 @@ Kytkennässä on kaksi vastusta:
    - Sijoita vastus sarjaan ulkoisen LEDin kanssa (`GPIO25 -> R2 -> LED -> GND` tai `GPIO25 -> LED -> R2 -> GND`).  
    - Tarkoitus: rajoittaa LED-virtaa.
 
-Tyypillinen arvo LEDin sarjavastukselle on `220R`-`1kR`.  
-Anturilinjan vastukselle käytä samaa arvoa kuin toimivassa nykykytkennässäsi.
 
 ## Kytkentäluonnos (tekstinä)
 
@@ -71,11 +69,11 @@ Huom:
 ## Ohjelman ajo (PlatformIO)
 
 1. Rakenna firmware:
-   - `C:\Users\Simo\.platformio\penv\Scripts\platformio.exe run`
+   - `C:\Users\Sinä\.platformio\penv\Scripts\platformio.exe run`
 2. Päivitä web-sivu LittleFS:aan:
-   - `C:\Users\Simo\.platformio\penv\Scripts\platformio.exe run -t uploadfs`
+   - `C:\Users\Sinä\.näplatformio\penv\Scripts\platformio.exe run -t uploadfs`
 3. Uploadaa firmware laitteelle:
-   - `C:\Users\Simo\.platformio\penv\Scripts\platformio.exe run -t upload`
+   - `C:\Users\Sinä\.platformio\penv\Scripts\platformio.exe run -t upload`
 
 ## Oletuspinnit koodissa
 
